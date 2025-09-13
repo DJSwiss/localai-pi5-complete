@@ -1,0 +1,107 @@
+name: Raspberry Pi 5 Compatibility Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  docker-compose-validation:
+    runs-on: ubuntu-latest
+    name: Validate Docker Compose Files
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Validate basic setup
+      run: |
+        docker-compose -f docker-compose.rpi5.yaml config
+        
+    - name: Validate training setup
+      run: |
+        docker-compose -f docker-compose.training.yaml config
+        
+    - name: Validate agents setup
+      run: |
+        docker-compose -f docker-compose.agents.yaml config
+        
+    - name: Validate MCP setup
+      run: |
+        docker-compose -f docker-compose.mcp.yaml config
+        
+    - name: Validate full stack
+      run: |
+        docker-compose -f docker-compose.full-stack.yaml config
+
+  script-validation:
+    runs-on: ubuntu-latest
+    name: Validate Startup Scripts
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check script permissions
+      run: |
+        ls -la start-*.sh
+        
+    - name: Validate shell scripts
+      run: |
+        bash -n start-rpi5.sh
+        bash -n start-training.sh
+        bash -n start-agents.sh
+        bash -n start-mcp.sh
+        bash -n start-fullstack.sh
+
+  python-validation:
+    runs-on: ubuntu-latest
+    name: Validate Python Code
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 fastapi uvicorn mcp[cli] requests
+        
+    - name: Lint Python files
+      run: |
+        flake8 --max-line-length=120 --ignore=E501,W503 agents/ mcp/ tools/ || true
+        
+    - name: Validate Python syntax
+      run: |
+        python -m py_compile agents/*.py
+        python -m py_compile mcp/*.py
+        python -m py_compile tools/*.py
+        python -m py_compile test-*.py
+
+  documentation-check:
+    runs-on: ubuntu-latest
+    name: Documentation Validation
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check required files
+      run: |
+        test -f README-Pi5-Complete.md
+        test -f CLAUDE.md
+        test -f .gitignore-pi5
+        
+    - name: Validate Markdown
+      uses: DavidAnson/markdownlint-action@v1
+      with:
+        files: '**/*.md'
+        ignore: 'README.md'
+        config: |
+          {
+            "MD013": { "line_length": 120 },
+            "MD033": false,
+            "MD041": false
+          }

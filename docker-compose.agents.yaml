@@ -1,0 +1,112 @@
+services:
+  # Main LocalAI API with Agent support
+  localai:
+    image: localai/localai:latest-aio-cpu
+    container_name: localai-agents
+    ports:
+      - "8080:8080"
+    environment:
+      - MODELS_PATH=/models
+      - THREADS=4
+      - CONTEXT_SIZE=4096  # Increased for agent workflows
+      - DEBUG=false
+      - FUNCTIONS=true  # Enable function calling
+      - PARALLEL_REQUESTS=4
+    volumes:
+      - ./models:/models:cached
+      - ./images:/tmp/generated/images/
+      - ./config:/config
+      - ./agents:/agents
+      - ./tools:/tools
+    restart: unless-stopped
+
+  # Agent Orchestrator (LangGraph + Ollama)
+  agent-orchestrator:
+    image: python:3.11-slim
+    container_name: agent-orchestrator
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./agents:/agents
+      - ./tools:/tools
+      - ./agent-logs:/logs
+    working_dir: /agents
+    environment:
+      - LOCALAI_BASE_URL=http://localai:8080
+      - PYTHONPATH=/agents
+    command: >
+      bash -c "
+      pip install --quiet fastapi uvicorn langchain langgraph ollama openai requests beautifulsoup4 python-multipart &&
+      pip install --quiet langchain-community langchain-openai langsmith &&
+      python -m uvicorn agent_server:app --host 0.0.0.0 --port 8090 --reload
+      "
+    depends_on:
+      - localai
+    restart: unless-stopped
+
+  # Function Calling Tools Server
+  tools-server:
+    image: python:3.11-slim
+    container_name: tools-server
+    ports:
+      - "8091:8091"
+    volumes:
+      - ./tools:/tools
+      - ./agent-logs:/logs
+    working_dir: /tools
+    environment:
+      - PYTHONPATH=/tools
+    command: >
+      bash -c "
+      pip install --quiet fastapi uvicorn requests beautifulsoup4 pandas numpy matplotlib pillow &&
+      pip install --quiet duckduckgo-search wikipediaapi python-multipart &&
+      python -m uvicorn tools_server:app --host 0.0.0.0 --port 8091 --reload
+      "
+    restart: unless-stopped
+
+  # Web UI with Agent Interface
+  agent-webui:
+    image: python:3.11-slim
+    container_name: agent-webui
+    ports:
+      - "8092:8092"
+    volumes:
+      - ./agents:/agents
+      - ./web-ui:/app
+    working_dir: /app
+    environment:
+      - LOCALAI_BASE_URL=http://localai:8080
+      - AGENT_ORCHESTRATOR_URL=http://agent-orchestrator:8090
+    command: >
+      bash -c "
+      pip install --quiet streamlit requests openai plotly pandas &&
+      streamlit run agent_ui.py --server.port 8092 --server.address 0.0.0.0
+      "
+    depends_on:
+      - localai
+      - agent-orchestrator
+    restart: unless-stopped
+
+  # Redis for Agent State Management
+  redis:
+    image: redis:alpine
+    container_name: agent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+    restart: unless-stopped
+
+  # PostgreSQL for Agent Memory/History
+  postgres:
+    image: postgres:15-alpine
+    container_name: agent-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=agents
+      - POSTGRES_USER=agent_user
+      - POSTGRES_PASSWORD=agent_pass
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped

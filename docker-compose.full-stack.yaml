@@ -1,0 +1,207 @@
+services:
+  # LocalAI - Core LLM Server
+  localai-core:
+    image: localai/localai:latest-aio-cpu
+    container_name: localai-core
+    ports:
+      - "8080:8080"
+    environment:
+      - MODELS_PATH=/models
+      - THREADS=4
+      - CONTEXT_SIZE=4096
+      - DEBUG=false
+      - FUNCTIONS=true
+      - MCP_ENABLED=true
+    volumes:
+      - ./models:/models:cached
+      - ./images:/tmp/generated/images/
+      - ./config:/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # LocalRecall - RAG Memory System  
+  localrecall:
+    image: golang:1.21-alpine
+    container_name: localrecall
+    ports:
+      - "8088:8088"
+    environment:
+      - COLLECTION_DB_PATH=/state/db
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - FILE_ASSETS=/state/assets
+      - OPENAI_API_KEY=localai-key
+      - OPENAI_BASE_URL=http://localai-core:8080
+      - PORT=8088
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=50
+    volumes:
+      - ./recall-state:/state
+      - ./recall-assets:/state/assets
+      - ./training/datasets:/datasets:ro
+      - ./agent-logs:/logs:ro
+    working_dir: /app
+    command: >
+      sh -c "
+      apk add --no-cache git curl &&
+      git clone https://github.com/mudler/LocalRecall.git . &&
+      go mod download &&
+      go build -o localrecall &&
+      ./localrecall
+      "
+    depends_on:
+      - localai-core
+    restart: unless-stopped
+
+  # MCP Server with LocalRecall Integration
+  mcp-server-recall:
+    image: python:3.11-slim
+    container_name: mcp-server-recall
+    ports:
+      - "8093:8093"
+    volumes:
+      - ./mcp:/mcp
+      - ./tools:/tools
+      - ./agent-logs:/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /mcp
+    environment:
+      - PYTHONPATH=/mcp:/tools
+      - LOCALAI_BASE_URL=http://localai-core:8080
+      - LOCALRECALL_BASE_URL=http://localrecall:8088
+    command: >
+      bash -c "
+      pip install --quiet 'mcp[cli]' fastapi uvicorn requests beautifulsoup4 &&
+      pip install --quiet pandas numpy docker-py psutil chromadb &&
+      pip install --quiet langchain langchain-openai sentence-transformers &&
+      python mcp_server_recall.py
+      "
+    depends_on:
+      - localai-core
+      - localrecall
+    restart: unless-stopped
+
+  # Enhanced Agent with Full Stack Integration
+  agent-fullstack:
+    image: python:3.11-slim
+    container_name: agent-fullstack
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./agents:/agents
+      - ./mcp:/mcp
+      - ./recall-assets:/recall-assets
+    working_dir: /agents
+    environment:
+      - PYTHONPATH=/agents:/mcp
+      - LOCALAI_BASE_URL=http://localai-core:8080
+      - LOCALRECALL_BASE_URL=http://localrecall:8088
+      - MCP_SERVER_URL=http://mcp-server-recall:8093
+    command: >
+      bash -c "
+      pip install --quiet fastapi uvicorn openai requests langchain &&
+      pip install --quiet 'mcp[cli]' streamlit plotly pandas chromadb &&
+      pip install --quiet sentence-transformers faiss-cpu &&
+      python agent_fullstack.py
+      "
+    depends_on:
+      - localai-core
+      - localrecall
+      - mcp-server-recall
+    restart: unless-stopped
+
+  # Vector Database for Advanced RAG
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: chroma-db
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_SERVER_AUTH_PROVIDER=chromadb.auth.simple.SimpleAuthServerProvider
+      - CHROMA_SERVER_AUTH_CREDENTIALS_FILE=/chroma/server.htpasswd
+      - CHROMA_SERVER_AUTH_CREDENTIALS=admin:localai123
+    volumes:
+      - ./chroma-data:/chroma/chroma
+    restart: unless-stopped
+
+  # Full Stack Web UI
+  webui-fullstack:
+    image: python:3.11-slim
+    container_name: webui-fullstack
+    ports:
+      - "8092:8092"
+    volumes:
+      - ./web-ui:/app
+      - ./recall-assets:/recall-assets:ro
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+      - LOCALAI_BASE_URL=http://localai-core:8080
+      - LOCALRECALL_BASE_URL=http://localrecall:8088
+      - AGENT_URL=http://agent-fullstack:8090
+      - CHROMA_URL=http://chroma:8000
+    command: >
+      bash -c "
+      pip install --quiet streamlit requests plotly pandas openai &&
+      pip install --quiet chromadb sentence-transformers faiss-cpu &&
+      streamlit run fullstack_ui.py --server.port 8092 --server.address 0.0.0.0
+      "
+    depends_on:
+      - localai-core
+      - localrecall
+      - agent-fullstack
+      - chroma
+    restart: unless-stopped
+
+  # Memory Persistence Layer
+  postgres-memory:
+    image: postgres:15-alpine
+    container_name: postgres-memory
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=localstack_memory
+      - POSTGRES_USER=localstack_user
+      - POSTGRES_PASSWORD=localstack_pass
+    volumes:
+      - ./postgres-memory:/var/lib/postgresql/data
+      - ./sql-init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+  # Redis for Session Management
+  redis-sessions:
+    image: redis:alpine
+    container_name: redis-sessions
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-sessions:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  # Document Processing Service
+  docprocessor:
+    image: python:3.11-slim
+    container_name: document-processor
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./recall-assets:/assets
+      - ./docprocessor:/app
+    working_dir: /app
+    environment:
+      - ASSETS_PATH=/assets
+      - LOCALRECALL_URL=http://localrecall:8088
+    command: >
+      bash -c "
+      pip install --quiet fastapi uvicorn python-multipart &&
+      pip install --quiet PyPDF2 python-docx pillow pytesseract &&
+      pip install --quiet sentence-transformers requests aiofiles &&
+      python document_processor.py
+      "
+    depends_on:
+      - localrecall
+    restart: unless-stopped

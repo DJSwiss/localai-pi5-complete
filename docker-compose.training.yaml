@@ -1,0 +1,103 @@
+services:
+  # Main LocalAI API server
+  localai:
+    image: localai/localai:latest-aio-cpu
+    container_name: localai-api
+    ports:
+      - "8080:8080"
+    environment:
+      - MODELS_PATH=/models
+      - THREADS=4
+      - CONTEXT_SIZE=2048
+      - DEBUG=false
+    volumes:
+      - ./models:/models:cached
+      - ./images:/tmp/generated/images/
+      - ./config:/config
+      - ./training:/training
+    restart: unless-stopped
+
+  # Web UI for model management
+  webui:
+    image: localai/localai:latest-webui
+    container_name: localai-webui
+    ports:
+      - "8081:8080"
+    environment:
+      - LOCALAI_API_BASE_URL=http://localai:8080
+    depends_on:
+      - localai
+    restart: unless-stopped
+
+  # Jupyter Lab for AI model development
+  jupyter:
+    image: jupyter/tensorflow-notebook:latest
+    container_name: ai-training-lab
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=localai123
+    volumes:
+      - ./training:/home/jovyan/training
+      - ./models:/home/jovyan/models
+      - ./datasets:/home/jovyan/datasets
+      - ./notebooks:/home/jovyan/notebooks
+    restart: unless-stopped
+    user: root
+    command: >
+      bash -c "
+      pip install --quiet transformers datasets accelerate peft huggingface_hub &&
+      pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu &&
+      pip install --quiet ollama python-multipart fastapi uvicorn &&
+      start-notebook.sh --NotebookApp.token='localai123' --NotebookApp.password='' --allow-root
+      "
+
+  # Ollama for easy model management and creation
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-server
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama:/root/.ollama
+      - ./training:/training
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+
+  # Optional: MLflow for experiment tracking
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow:/mlflow
+      - ./training:/training
+    working_dir: /mlflow
+    command: >
+      bash -c "
+      pip install mlflow[extras] &&
+      mlflow server --host 0.0.0.0 --port 5000 --default-artifact-root /mlflow/artifacts
+      "
+    restart: unless-stopped
+
+  # HuggingFace Datasets and Model Hub integration
+  huggingface-hub:
+    image: python:3.11-slim
+    container_name: hf-hub-server
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./training:/training
+      - ./models:/models
+      - ./hf-cache:/root/.cache/huggingface
+    working_dir: /training
+    command: >
+      bash -c "
+      pip install transformers datasets gradio huggingface_hub accelerate peft &&
+      python -c 'import gradio as gr; print(\"HuggingFace Hub ready for model creation!\")' &&
+      tail -f /dev/null
+      "
+    restart: unless-stopped

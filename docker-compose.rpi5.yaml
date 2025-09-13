@@ -1,0 +1,41 @@
+services:
+  api:
+    # Optimized for Raspberry Pi 5 ARM64
+    image: localai/localai:latest-aio-cpu
+    container_name: localai-rpi5
+    ports:
+      - "8080:8080"
+    environment:
+      - MODELS_PATH=/models
+      - THREADS=4  # Optimized for Pi 5's 4 cores
+      - CONTEXT_SIZE=2048  # Reasonable context size for Pi 5
+      - DEBUG=false
+    volumes:
+      - ./models:/models:cached
+      - ./images/:/tmp/generated/images/
+      - ./config:/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Resource limits for Pi 5
+    deploy:
+      resources:
+        limits:
+          memory: 6G  # Pi 5 has 4GB or 8GB RAM variants
+        reservations:
+          memory: 2G
+
+  # Optional: Web UI for easier model management
+  webui:
+    image: localai/localai:latest-webui
+    container_name: localai-webui
+    ports:
+      - "8081:8080"
+    environment:
+      - LOCALAI_API_BASE_URL=http://api:8080
+    depends_on:
+      - api
+    restart: unless-stopped

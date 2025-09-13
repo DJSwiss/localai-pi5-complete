@@ -1,0 +1,173 @@
+services:
+  # LocalAI with MCP integration
+  localai-mcp:
+    image: localai/localai:latest-aio-cpu
+    container_name: localai-mcp
+    ports:
+      - "8080:8080"
+    environment:
+      - MODELS_PATH=/models
+      - THREADS=4
+      - CONTEXT_SIZE=4096
+      - DEBUG=false
+      - FUNCTIONS=true
+      - MCP_ENABLED=true
+    volumes:
+      - ./models:/models:cached
+      - ./images:/tmp/generated/images/
+      - ./config:/config
+      - ./mcp:/mcp
+    restart: unless-stopped
+
+  # MCP Server Hub
+  mcp-server:
+    image: python:3.11-slim
+    container_name: mcp-server
+    ports:
+      - "8093:8093"
+    volumes:
+      - ./mcp:/mcp
+      - ./tools:/tools
+      - ./agent-logs:/logs
+      - /var/run/docker.sock:/var/run/docker.sock  # For Docker integration
+    working_dir: /mcp
+    environment:
+      - PYTHONPATH=/mcp:/tools
+      - MCP_SERVER_NAME=LocalAI-Pi5-MCP
+      - MCP_SERVER_VERSION=1.0.0
+    command: >
+      bash -c "
+      pip install --quiet 'mcp[cli]' fastapi uvicorn requests beautifulsoup4 &&
+      pip install --quiet pandas numpy matplotlib pillow docker-py psutil &&
+      pip install --quiet duckduckgo-search wikipediaapi python-multipart &&
+      python mcp_server.py
+      "
+    restart: unless-stopped
+    privileged: true  # For system monitoring
+
+  # MCP Resource Server (Data Sources)
+  mcp-resources:
+    image: python:3.11-slim
+    container_name: mcp-resources
+    ports:
+      - "8094:8094"
+    volumes:
+      - ./mcp:/mcp
+      - ./training/datasets:/datasets
+      - ./models:/models:ro
+      - ./agent-logs:/logs:ro
+    working_dir: /mcp
+    environment:
+      - PYTHONPATH=/mcp
+      - DATA_PATH=/datasets
+      - MODELS_PATH=/models
+    command: >
+      bash -c "
+      pip install --quiet 'mcp[cli]' fastapi uvicorn pandas sqlite3 &&
+      pip install --quiet python-multipart aiofiles watchdog &&
+      python mcp_resources.py
+      "
+    restart: unless-stopped
+
+  # MCP Client Gateway (connects agents to MCP servers)
+  mcp-gateway:
+    image: python:3.11-slim
+    container_name: mcp-gateway
+    ports:
+      - "8095:8095"
+    volumes:
+      - ./mcp:/mcp
+      - ./agents:/agents
+    working_dir: /mcp
+    environment:
+      - PYTHONPATH=/mcp
+      - LOCALAI_BASE_URL=http://localai-mcp:8080
+      - MCP_SERVER_URL=http://mcp-server:8093
+      - MCP_RESOURCES_URL=http://mcp-resources:8094
+    command: >
+      bash -c "
+      pip install --quiet 'mcp[cli]' fastapi uvicorn openai requests &&
+      pip install --quiet langchain langchain-openai asyncio-mqtt &&
+      python mcp_gateway.py
+      "
+    depends_on:
+      - localai-mcp
+      - mcp-server
+      - mcp-resources
+    restart: unless-stopped
+
+  # Enhanced Agent with MCP Support
+  agent-mcp:
+    image: python:3.11-slim
+    container_name: agent-mcp
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./mcp:/mcp
+      - ./agents:/agents
+      - ./tools:/tools
+    working_dir: /agents
+    environment:
+      - PYTHONPATH=/agents:/mcp
+      - LOCALAI_BASE_URL=http://localai-mcp:8080
+      - MCP_GATEWAY_URL=http://mcp-gateway:8095
+    command: >
+      bash -c "
+      pip install --quiet 'mcp[cli]' fastapi uvicorn openai requests &&
+      pip install --quiet langchain langchain-openai streamlit plotly &&
+      python agent_mcp.py
+      "
+    depends_on:
+      - mcp-gateway
+    restart: unless-stopped
+
+  # MCP Web UI Dashboard
+  mcp-dashboard:
+    image: python:3.11-slim
+    container_name: mcp-dashboard
+    ports:
+      - "8097:8097"
+    volumes:
+      - ./mcp:/mcp
+      - ./web-ui:/app
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app:/mcp
+      - MCP_SERVER_URL=http://mcp-server:8093
+      - MCP_RESOURCES_URL=http://mcp-resources:8094
+      - MCP_GATEWAY_URL=http://mcp-gateway:8095
+      - AGENT_MCP_URL=http://agent-mcp:8096
+    command: >
+      bash -c "
+      pip install --quiet streamlit requests plotly pandas 'mcp[cli]' &&
+      streamlit run mcp_dashboard.py --server.port 8097 --server.address 0.0.0.0
+      "
+    depends_on:
+      - mcp-server
+      - mcp-resources
+      - agent-mcp
+    restart: unless-stopped
+
+  # Redis for MCP state management
+  redis-mcp:
+    image: redis:alpine
+    container_name: redis-mcp
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - ./mcp-redis:/data
+    restart: unless-stopped
+
+  # PostgreSQL for MCP context storage
+  postgres-mcp:
+    image: postgres:15-alpine
+    container_name: postgres-mcp
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    environment:
+      - POSTGRES_DB=mcp_context
+      - POSTGRES_USER=mcp_user
+      - POSTGRES_PASSWORD=mcp_pass
+    volumes:
+      - ./mcp-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
