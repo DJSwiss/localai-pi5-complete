@@ -1017,7 +1017,7 @@ jobs:
         go-version: ['1.21.x']
     steps:
       - name: Clone
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           submodules: true
       - name: Setup Go ${{ matrix.go-version }}
@@ -1103,7 +1103,7 @@ jobs:
         go-version: ['1.21.x']
     steps:
       - name: Clone
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           submodules: true
       - name: Setup Go ${{ matrix.go-version }}
